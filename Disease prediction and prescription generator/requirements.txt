@@ -1,0 +1,13 @@
+streamlit
+python-dotenv
+pandas
+numpy
+scikit-learn
+google-generativeai
+googletrans==4.0.0-rc1
+streamlit-lottie
+pathlib
+deep-translator
+gTTS
+gtts
+googletrans==4.0.0-rc1
