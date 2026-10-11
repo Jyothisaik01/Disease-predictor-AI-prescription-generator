@@ -6,14 +6,10 @@ env/
 __pycache__/
 *.pyc
 
-# Heavy legacy Streamlit and Training data (clinical_model.json has all necessary data)
+# Heavy legacy Streamlit and Training data
 Disease prediction and prescription generator/
 *.csv
 *.ipynb
-
-# Client build artifacts and dependencies (Vercel builds client separately into client/dist)
-client/node_modules/
-client/src/
 
 # Git and logs
 .git
