@@ -1,0 +1,12 @@
+{
+  "name": "disease-predictor-ai-prescription-generator",
+  "version": "2.0.0",
+  "private": true,
+  "description": "MediSense AI - Disease Predictor and Prescription Generator",
+  "scripts": {
+    "dev": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "preview": "cd client && npm run preview"
+  }
+}
+

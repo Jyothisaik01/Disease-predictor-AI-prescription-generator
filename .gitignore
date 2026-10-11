@@ -1,0 +1,29 @@
+# Environment & Secrets (Never commit API keys!)
+.env
+.env.*
+!.env.example
+*.local
+
+# Python
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*.py[cod]
+*.so
+venv/
+venv_linux/
+env/
+.Python
+*.egg-info/
+
+# Node & Frontend
+node_modules/
+client/node_modules/
+client/dist/
+.npm
+.eslintcache
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
