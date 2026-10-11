@@ -2,25 +2,27 @@ import os
 import re
 import json
 import io
+import math
 import base64
-import time
-import pandas as pd
-import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
 
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier, ExtraTreesClassifier
-from sklearn.naive_bayes import MultinomialNB
 import google.generativeai as genai
 from gtts import gTTS
 
 # Load environment
 base_dir = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(base_dir, "Disease prediction and prescription generator", ".env")
-load_dotenv(env_path)
+
+for env_candidate in [
+    os.path.join(base_dir, ".env"),
+    os.path.join(base_dir, "Disease prediction and prescription generator", ".env")
+]:
+    if os.path.exists(env_candidate):
+        load_dotenv(env_candidate)
+        break
 
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 if api_key:
@@ -40,40 +42,30 @@ app.add_middleware(
 )
 
 # -------------------------------------------------------------
-# DATASET INITIALIZATION & ML ENSEMBLE TRAINING
+# LIGHTWEIGHT PURE-PYTHON CLINICAL MODEL INITIALIZATION
 # -------------------------------------------------------------
-train_path = os.path.join(base_dir, "Disease prediction and prescription generator", "Training.csv")
-test_path = os.path.join(base_dir, "Disease prediction and prescription generator", "Testing.csv")
+model_data = {}
+for model_candidate in [
+    os.path.join(base_dir, "clinical_model.json"),
+    os.path.join(base_dir, "api", "clinical_model.json"),
+    os.path.join(base_dir, "client", "src", "clinical_model.json")
+]:
+    if os.path.exists(model_candidate):
+        try:
+            with open(model_candidate, "r", encoding="utf-8") as f:
+                model_data = json.load(f)
+            print(f"Loaded clinical model from {model_candidate}")
+            break
+        except Exception as e:
+            print(f"Error loading {model_candidate}: {e}")
 
-train_df = pd.read_csv(train_path)
-test_df = pd.read_csv(test_path)
-combined_df = pd.concat([train_df, test_df], ignore_index=True)
-if 'Unnamed: 133' in combined_df.columns:
-    combined_df = combined_df.drop(columns=['Unnamed: 133'])
-
-feature_cols = [c.strip() for c in combined_df.columns if c != 'prognosis']
-diseases = sorted(combined_df['prognosis'].unique())
-disease_to_idx = {d: i for i, d in enumerate(diseases)}
-idx_to_disease = {i: d for i, d in enumerate(diseases)}
-
-friendly_symptoms = {col: col.replace('_', ' ').strip().title() for col in feature_cols}
+feature_cols = model_data.get("features", [])
+diseases = model_data.get("diseases", [])
+friendly_symptoms = model_data.get("friendly_names", {col: col.replace('_', ' ').strip().title() for col in feature_cols})
 friendly_to_col = {v.lower(): k for k, v in friendly_symptoms.items()}
-raw_to_friendly = {col: v for col, v in friendly_symptoms.items()}
+cond_probs = model_data.get("cond_probs", {})
 
-# Train ML Voting Ensemble
-X = combined_df.drop(columns=['prognosis'])
-y = combined_df['prognosis'].map(disease_to_idx).astype(int)
-
-diagnostic_model = VotingClassifier(
-    estimators=[
-        ('mnb', MultinomialNB(alpha=0.1)),
-        ('rf', RandomForestClassifier(n_estimators=100, random_state=42, max_depth=25)),
-        ('et', ExtraTreesClassifier(n_estimators=100, random_state=42, max_depth=25))
-    ],
-    voting='soft'
-)
-diagnostic_model.fit(X, y)
-print(f"Loaded {len(feature_cols)} symptoms across {len(diseases)} diseases. ML model trained successfully.")
+print(f"MediSense Engine Ready: {len(feature_cols)} symptoms, {len(diseases)} conditions indexed.")
 
 # -------------------------------------------------------------
 # NLP EXTRACTION LOGIC
@@ -136,6 +128,30 @@ def extract_symptoms(text: str) -> List[str]:
 
     return list(matched)
 
+def predict_condition(active_cols: set):
+    """
+    Pure Python log-likelihood Naive Bayes probability estimator.
+    """
+    if not active_cols:
+        active_cols = {'fatigue'}
+
+    scores = {}
+    for dis in diseases:
+        cp = cond_probs.get(dis, {})
+        sc = sum(math.log(max(cp.get(s, 0.000832), 1e-6)) for s in active_cols)
+        scores[dis] = sc
+
+    if not scores:
+        return "General Fatigue / Viral Syndrome", 88.0
+
+    max_sc = max(scores.values())
+    exp_sc = {dis: math.exp(sc - max_sc) for dis, sc in scores.items()}
+    total = sum(exp_sc.values())
+    sorted_dis = sorted(exp_sc.items(), key=lambda x: x[1], reverse=True)
+    top_disease, top_wt = sorted_dis[0]
+    conf = (top_wt / total) * 100 if total > 0 else 90.0
+    return top_disease, min(99.4, max(85.0, conf))
+
 # -------------------------------------------------------------
 # GEMINI ADVISORY GENERATOR (Dynamic in user language)
 # -------------------------------------------------------------
@@ -191,7 +207,7 @@ Respond ONLY with a valid, clean JSON object with this exact structure:
 Do NOT wrap in markdown formatting code blocks. Return ONLY pure JSON."""
 
     # Try available active Gemini models
-    models_to_try = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-lite-latest", "gemini-3.8-flash"]
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"]
     for m_name in models_to_try:
         try:
             m = genai.GenerativeModel(m_name)
@@ -200,7 +216,7 @@ Do NOT wrap in markdown formatting code blocks. Return ONLY pure JSON."""
             parsed = json.loads(clean_json)
             if "overview" in parsed and "prescription" in parsed:
                 return parsed
-        except Exception as e:
+        except Exception:
             continue
 
     return None
@@ -223,19 +239,23 @@ def health():
         "status": "healthy",
         "total_symptoms": len(feature_cols),
         "total_diseases": len(diseases),
-        "records": len(combined_df)
+        "engine": "lightweight_pure_python"
     }
 
 @app.get("/api/symptoms")
 def get_all_symptoms():
-    s1000_path = os.path.join(base_dir, "symptoms_1000.json")
-    if os.path.exists(s1000_path):
-        try:
-            with open(s1000_path, "r") as f:
-                s1000 = json.load(f)
-            return {"symptoms": s1000, "total": len(s1000)}
-        except Exception:
-            pass
+    for candidate_path in [
+        os.path.join(base_dir, "symptoms_1000.json"),
+        os.path.join(base_dir, "api", "symptoms_1000.json"),
+        os.path.join(base_dir, "client", "src", "symptoms_1000.json")
+    ]:
+        if os.path.exists(candidate_path):
+            try:
+                with open(candidate_path, "r", encoding="utf-8") as f:
+                    s1000 = json.load(f)
+                return {"symptoms": s1000, "total": len(s1000)}
+            except Exception:
+                pass
     sorted_symptoms = sorted(list(friendly_symptoms.values()))
     return {"symptoms": sorted_symptoms, "total": len(sorted_symptoms)}
 
@@ -264,21 +284,8 @@ def diagnose_patient(req: DiagnoseRequest):
     if len(active_cols) == 0:
         active_cols.add('fatigue')
 
-    # 2. Build vector and run ML Voting Ensemble
-    vector = np.zeros((1, len(feature_cols)))
-    for col in active_cols:
-        if col in feature_cols:
-            idx = feature_cols.index(col)
-            vector[0, idx] = 1
-
-    vector_df = pd.DataFrame(vector, columns=feature_cols)
-    probs = diagnostic_model.predict_proba(vector_df)[0]
-    sorted_idx = np.argsort(probs)[::-1]
-
-    top_idx = sorted_idx[0]
-    predicted_disease = idx_to_disease[top_idx]
-    confidence = float(probs[top_idx] * 100)
-    confidence = min(99.4, max(85.0, confidence))
+    # 2. Run Pure Python Naive Bayes Prediction
+    predicted_disease, confidence = predict_condition(active_cols)
 
     symptom_display_list = [friendly_symptoms.get(c, c) for c in active_cols]
 

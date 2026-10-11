@@ -1,8 +1,5 @@
 fastapi
 uvicorn
-pandas
-scikit-learn
 google-generativeai
 gtts
 python-dotenv
-
