@@ -4,13 +4,14 @@ import json
 import io
 import math
 import base64
+import urllib.request
+import urllib.error
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
 
-import google.generativeai as genai
 from gtts import gTTS
 
 # Load environment
@@ -25,11 +26,6 @@ for env_candidate in [
         break
 
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-if api_key:
-    try:
-        genai.configure(api_key=api_key)
-    except Exception as e:
-        print("Gemini configuration notice:", e)
 
 app = FastAPI(title="MediSense AI Clinical Engine", version="3.0")
 
@@ -153,7 +149,7 @@ def predict_condition(active_cols: set):
     return top_disease, min(99.4, max(85.0, conf))
 
 # -------------------------------------------------------------
-# GEMINI ADVISORY GENERATOR (Dynamic in user language)
+# GEMINI ADVISORY GENERATOR (Dynamic in user language via REST API)
 # -------------------------------------------------------------
 LANGUAGE_CONFIG = {
     'en': {'name': 'English', 'native': 'English'},
@@ -168,6 +164,9 @@ LANGUAGE_CONFIG = {
 }
 
 def generate_gemini_guidance(user_text: str, symptom_names: List[str], disease: str, confidence: float, lang_code: str):
+    if not api_key:
+        return None
+
     lang_info = LANGUAGE_CONFIG.get(lang_code, LANGUAGE_CONFIG['en'])
     lang_name = lang_info['name']
     lang_native = lang_info['native']
@@ -206,16 +205,34 @@ Respond ONLY with a valid, clean JSON object with this exact structure:
 }}
 Do NOT wrap in markdown formatting code blocks. Return ONLY pure JSON."""
 
-    # Try available active Gemini models
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"]
+    payload = json.dumps({
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }).encode("utf-8")
+
+    models_to_try = [
+        "gemini-3.5-flash",
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-2.5-flash-lite"
+    ]
+
     for m_name in models_to_try:
         try:
-            m = genai.GenerativeModel(m_name)
-            res = m.generate_content(prompt).text.strip()
-            clean_json = re.sub(r'```json\s*|\s*```', '', res).strip()
-            parsed = json.loads(clean_json)
-            if "overview" in parsed and "prescription" in parsed:
-                return parsed
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                text = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                clean_json = re.sub(r'```json\s*|\s*```', '', text).strip()
+                parsed = json.loads(clean_json)
+                if "overview" in parsed and "prescription" in parsed:
+                    return parsed
         except Exception:
             continue
 
